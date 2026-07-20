@@ -482,30 +482,52 @@ function normalizeDigits(str) {
   });
 }
 
+// Manual regex-based parser — deliberately avoids the browser's built-in
+// URL() constructor, since its handling of non-standard schemes like
+// "trojan://" has been observed to differ between browsers/versions
+// (works on desktop Chrome, silently returns an empty host on some
+// Android Chrome builds). A hand-rolled parser behaves identically
+// everywhere.
+const TROJAN_RE = /^trojan:\/\/([^@]+)@([^:/?#]+):(\d+)(\/[^?#]*)?(?:\?([^#]*))?(?:#(.*))?$/i;
+
+function safeDecodeURIComponent(str) {
+  try { return decodeURIComponent(str); } catch (e) { return str; }
+}
+
+function parseQueryString(qs) {
+  if (!qs) return [];
+  return qs.split("&").filter(Boolean).map((pair) => {
+    const idx = pair.indexOf("=");
+    if (idx === -1) return [safeDecodeURIComponent(pair), ""];
+    return [safeDecodeURIComponent(pair.slice(0, idx)), safeDecodeURIComponent(pair.slice(idx + 1))];
+  });
+}
+
 function parseTrojanLink(raw) {
   const trimmed = stripInvisibleChars(raw).trim();
   if (!trimmed) return null;
-  try {
-    const u = new URL(trimmed);
-    if (u.protocol.replace(":", "") !== "trojan") {
-      throw new Error('Unsupported scheme "' + u.protocol.replace(":", "") + '"');
-    }
-    const password = decodeURIComponent(u.username || "");
-    const host = u.hostname;
-    const port = u.port;
-    const path = u.pathname && u.pathname !== "/" ? u.pathname : "";
-    const params = [...new URLSearchParams(u.search).entries()];
-    const label = u.hash ? decodeURIComponent(u.hash.slice(1)) : "";
-    if (!host || !port) throw new Error("Missing host or port");
-    return {
-      id: nextId(), raw: trimmed, valid: true, error: null,
-      password, host, port, path, params,
-      originalLabel: label, flag: guessFlag(label),
-      customLabel: false, customLabelText: label,
-    };
-  } catch (err) {
-    return { id: nextId(), raw: trimmed, valid: false, error: err.message || "Could not parse this line" };
+
+  const m = trimmed.match(TROJAN_RE);
+  if (!m) {
+    const looksLikeTrojan = /^trojan:\/\//i.test(trimmed);
+    const error = looksLikeTrojan
+      ? "Missing host or port"
+      : 'Unsupported scheme or malformed link';
+    return { id: nextId(), raw: trimmed, valid: false, error };
   }
+
+  const [, rawPassword, host, port, rawPath, rawQuery, rawHash] = m;
+  const password = safeDecodeURIComponent(rawPassword);
+  const path = rawPath || "";
+  const params = parseQueryString(rawQuery);
+  const label = rawHash ? safeDecodeURIComponent(rawHash) : "";
+
+  return {
+    id: nextId(), raw: trimmed, valid: true, error: null,
+    password, host, port, path, params,
+    originalLabel: label, flag: guessFlag(label),
+    customLabel: false, customLabelText: label,
+  };
 }
 
 function buildQueryString(params) {
